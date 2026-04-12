@@ -1,11 +1,13 @@
 """3-stage LLM Council orchestration."""
 
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 from .openrouter import query_models_parallel, query_model
-from .config import COUNCIL_MODELS, CHAIRMAN_MODEL
+from .config import COUNCIL_MODELS, CHAIRMAN_MODEL, TITLE_MODEL, FALLBACK_MODELS
 
 
-async def stage1_collect_responses(user_query: str) -> List[Dict[str, Any]]:
+async def stage1_collect_responses(
+    user_query: str,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Stage 1: Collect individual responses from all council models.
 
@@ -13,29 +15,44 @@ async def stage1_collect_responses(user_query: str) -> List[Dict[str, Any]]:
         user_query: The user's question
 
     Returns:
-        List of dicts with 'model' and 'response' keys
+        Tuple of (successful responses, failed model attempts)
     """
     messages = [{"role": "user", "content": user_query}]
 
     # Query all models in parallel
-    responses = await query_models_parallel(COUNCIL_MODELS, messages)
+    responses = await query_models_parallel(
+        COUNCIL_MODELS,
+        messages,
+        fallback_models=FALLBACK_MODELS,
+    )
 
     # Format results
     stage1_results = []
-    for model, response in responses.items():
-        if response is not None:  # Only include successful responses
+    failed_models = []
+    for requested_model, response in responses.items():
+        if response.get("ok"):
+            resolved_model = response.get("model", requested_model)
             stage1_results.append({
-                "model": model,
-                "response": response.get('content', '')
+                "model": resolved_model,
+                "requested_model": requested_model,
+                "response": response.get("content", ""),
             })
+            continue
 
-    return stage1_results
+        failed_models.append({
+            "model": requested_model,
+            "status_code": response.get("status_code"),
+            "error": response.get("error", "Unknown error"),
+            "attempted_models": response.get("attempted_models", [requested_model]),
+        })
+
+    return stage1_results, failed_models
 
 
 async def stage2_collect_rankings(
     user_query: str,
     stage1_results: List[Dict[str, Any]]
-) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
+) -> Tuple[List[Dict[str, Any]], Dict[str, str], List[Dict[str, Any]]]:
     """
     Stage 2: Each model ranks the anonymized responses.
 
@@ -44,7 +61,7 @@ async def stage2_collect_rankings(
         stage1_results: Results from Stage 1
 
     Returns:
-        Tuple of (rankings list, label_to_model mapping)
+        Tuple of (rankings list, label_to_model mapping, failed model attempts)
     """
     # Create anonymized labels for responses (Response A, Response B, etc.)
     labels = [chr(65 + i) for i in range(len(stage1_results))]  # A, B, C, ...
@@ -95,28 +112,43 @@ Now provide your evaluation and ranking:"""
     messages = [{"role": "user", "content": ranking_prompt}]
 
     # Get rankings from all council models in parallel
-    responses = await query_models_parallel(COUNCIL_MODELS, messages)
+    responses = await query_models_parallel(
+        COUNCIL_MODELS,
+        messages,
+        fallback_models=FALLBACK_MODELS,
+    )
 
     # Format results
     stage2_results = []
-    for model, response in responses.items():
-        if response is not None:
-            full_text = response.get('content', '')
+    failed_models = []
+    for requested_model, response in responses.items():
+        if response.get("ok"):
+            resolved_model = response.get("model", requested_model)
+            full_text = response.get("content", "")
             parsed = parse_ranking_from_text(full_text)
             stage2_results.append({
-                "model": model,
+                "model": resolved_model,
+                "requested_model": requested_model,
                 "ranking": full_text,
-                "parsed_ranking": parsed
+                "parsed_ranking": parsed,
             })
+            continue
 
-    return stage2_results, label_to_model
+        failed_models.append({
+            "model": requested_model,
+            "status_code": response.get("status_code"),
+            "error": response.get("error", "Unknown error"),
+            "attempted_models": response.get("attempted_models", [requested_model]),
+        })
+
+    return stage2_results, label_to_model, failed_models
 
 
 async def stage3_synthesize_final(
     user_query: str,
     stage1_results: List[Dict[str, Any]],
     stage2_results: List[Dict[str, Any]]
-) -> Dict[str, Any]:
+) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
     """
     Stage 3: Chairman synthesizes final response.
 
@@ -126,7 +158,7 @@ async def stage3_synthesize_final(
         stage2_results: Rankings from Stage 2
 
     Returns:
-        Dict with 'model' and 'response' keys
+        Tuple of (result payload, optional failure details)
     """
     # Build comprehensive context for chairman
     stage1_text = "\n\n".join([
@@ -159,19 +191,32 @@ Provide a clear, well-reasoned final answer that represents the council's collec
     messages = [{"role": "user", "content": chairman_prompt}]
 
     # Query the chairman model
-    response = await query_model(CHAIRMAN_MODEL, messages)
+    response = await query_model(
+        CHAIRMAN_MODEL,
+        messages,
+        fallback_models=FALLBACK_MODELS,
+    )
 
-    if response is None:
+    if not response.get("ok"):
         # Fallback if chairman fails
+        failure = {
+            "model": CHAIRMAN_MODEL,
+            "status_code": response.get("status_code"),
+            "error": response.get("error", "Unknown error"),
+            "attempted_models": response.get("attempted_models", [CHAIRMAN_MODEL]),
+        }
         return {
             "model": CHAIRMAN_MODEL,
-            "response": "Error: Unable to generate final synthesis."
-        }
+            "requested_model": CHAIRMAN_MODEL,
+            "response": "Error: Unable to generate final synthesis.",
+        }, failure
 
+    resolved_model = response.get("model", CHAIRMAN_MODEL)
     return {
-        "model": CHAIRMAN_MODEL,
-        "response": response.get('content', '')
-    }
+        "model": resolved_model,
+        "requested_model": CHAIRMAN_MODEL,
+        "response": response.get("content", ""),
+    }, None
 
 
 def parse_ranking_from_text(ranking_text: str) -> List[str]:
@@ -197,7 +242,12 @@ def parse_ranking_from_text(ranking_text: str) -> List[str]:
             numbered_matches = re.findall(r'\d+\.\s*Response [A-Z]', ranking_section)
             if numbered_matches:
                 # Extract just the "Response X" part
-                return [re.search(r'Response [A-Z]', m).group() for m in numbered_matches]
+                labels = []
+                for match in numbered_matches:
+                    label_match = re.search(r'Response [A-Z]', match)
+                    if label_match:
+                        labels.append(label_match.group())
+                return labels
 
             # Fallback: Extract all "Response X" patterns in order
             matches = re.findall(r'Response [A-Z]', ranking_section)
@@ -274,14 +324,20 @@ Title:"""
 
     messages = [{"role": "user", "content": title_prompt}]
 
-    # Use gemini-2.5-flash for title generation (fast and cheap)
-    response = await query_model("google/gemini-2.5-flash", messages, timeout=30.0)
+    # Use a lightweight configured model for title generation.
+    response = await query_model(
+        TITLE_MODEL,
+        messages,
+        timeout=30.0,
+        max_retries=1,
+        fallback_models=FALLBACK_MODELS,
+    )
 
-    if response is None:
+    if not response.get("ok"):
         # Fallback to a generic title
         return "New Conversation"
 
-    title = response.get('content', 'New Conversation').strip()
+    title = response.get("content", "New Conversation").strip()
 
     # Clean up the title - remove quotes, limit length
     title = title.strip('"\'')
@@ -304,32 +360,82 @@ async def run_full_council(user_query: str) -> Tuple[List, List, Dict, Dict]:
         Tuple of (stage1_results, stage2_results, stage3_result, metadata)
     """
     # Stage 1: Collect individual responses
-    stage1_results = await stage1_collect_responses(user_query)
+    stage1_results, stage1_failures = await stage1_collect_responses(user_query)
+
+    failures: Dict[str, List[Dict[str, Any]]] = {
+        "stage1": stage1_failures,
+        "stage2": [],
+        "stage3": [],
+    }
 
     # If no models responded successfully, return error
     if not stage1_results:
         return [], [], {
             "model": "error",
             "response": "All models failed to respond. Please try again."
-        }, {}
+        }, {
+            "requested_models": COUNCIL_MODELS,
+            "failures": failures,
+            "fallbacks": {
+                "stage1": [],
+                "stage2": [],
+                "stage3": [],
+            },
+        }
 
     # Stage 2: Collect rankings
-    stage2_results, label_to_model = await stage2_collect_rankings(user_query, stage1_results)
+    stage2_results, label_to_model, stage2_failures = await stage2_collect_rankings(
+        user_query,
+        stage1_results,
+    )
+    failures["stage2"] = stage2_failures
 
     # Calculate aggregate rankings
     aggregate_rankings = calculate_aggregate_rankings(stage2_results, label_to_model)
 
     # Stage 3: Synthesize final answer
-    stage3_result = await stage3_synthesize_final(
+    stage3_result, stage3_failure = await stage3_synthesize_final(
         user_query,
         stage1_results,
         stage2_results
     )
+    if stage3_failure is not None:
+        failures["stage3"] = [stage3_failure]
+
+    stage1_fallbacks = [
+        {
+            "requested_model": result.get("requested_model"),
+            "used_model": result.get("model"),
+        }
+        for result in stage1_results
+        if result.get("requested_model") and result.get("requested_model") != result.get("model")
+    ]
+    stage2_fallbacks = [
+        {
+            "requested_model": result.get("requested_model"),
+            "used_model": result.get("model"),
+        }
+        for result in stage2_results
+        if result.get("requested_model") and result.get("requested_model") != result.get("model")
+    ]
+    stage3_fallbacks = []
+    if stage3_result.get("requested_model") and stage3_result.get("requested_model") != stage3_result.get("model"):
+        stage3_fallbacks.append({
+            "requested_model": stage3_result.get("requested_model"),
+            "used_model": stage3_result.get("model"),
+        })
 
     # Prepare metadata
     metadata = {
+        "requested_models": COUNCIL_MODELS,
         "label_to_model": label_to_model,
-        "aggregate_rankings": aggregate_rankings
+        "aggregate_rankings": aggregate_rankings,
+        "failures": failures,
+        "fallbacks": {
+            "stage1": stage1_fallbacks,
+            "stage2": stage2_fallbacks,
+            "stage3": stage3_fallbacks,
+        },
     }
 
     return stage1_results, stage2_results, stage3_result, metadata

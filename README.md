@@ -14,25 +14,39 @@ In a bit more detail, here is what happens when you submit a query:
 
 This project was 99% vibe coded as a fun Saturday hack because I wanted to explore and evaluate a number of LLMs side by side in the process of [reading books together with LLMs](https://x.com/karpathy/status/1990577951671509438). It's nice and useful to see multiple responses side by side, and also the cross-opinions of all LLMs on each other's outputs. I'm not going to support it in any way, it's provided here as is for other people's inspiration and I don't intend to improve it. Code is ephemeral now and libraries are over, ask your LLM to change it in whatever way you like.
 
-## Setup
+## Getting Started (Windows)
 
-### 1. Install Dependencies
+The setup below is tested on Windows with Python 3.11 and `uv`.
 
-The project uses [uv](https://docs.astral.sh/uv/) for project management.
+### 1. Prerequisites
 
-**Backend:**
-```bash
-uv sync
+Install:
+
+- Python 3.11
+- Node.js + npm
+
+Confirm Python 3.11 is available:
+
+```powershell
+py -0p
 ```
 
-**Frontend:**
-```bash
-cd frontend
-npm install
-cd ..
+If `uv` is not on your PATH, use it through Python:
+
+```powershell
+py -3.11 -m pip install uv
 ```
 
-### 2. Configure API Key
+### 2. Install Dependencies
+
+From the repository root:
+
+```powershell
+py -3.11 -m uv sync --python 3.11
+npm install --prefix frontend
+```
+
+### 3. Configure API Key
 
 Create a `.env` file in the project root:
 
@@ -42,42 +56,53 @@ OPENROUTER_API_KEY=sk-or-v1-...
 
 Get your API key at [openrouter.ai](https://openrouter.ai/). Make sure to purchase the credits you need, or sign up for automatic top up.
 
-### 3. Configure Models (Optional)
+### 4. Configure Models (Optional)
 
 Edit `backend/config.py` to customize the council:
 
 ```python
 COUNCIL_MODELS = [
-    "openai/gpt-5.1",
-    "google/gemini-3-pro-preview",
-    "anthropic/claude-sonnet-4.5",
-    "x-ai/grok-4",
+        "openai/gpt-oss-120b:free",
+        "meta-llama/llama-3.3-70b-instruct:free",
+        "google/gemma-3-27b-it:free",
+        "openai/gpt-oss-20b:free",
 ]
 
-CHAIRMAN_MODEL = "google/gemini-3-pro-preview"
+CHAIRMAN_MODEL = "openai/gpt-oss-120b:free"
+```
+
+Free model availability can change over time. To inspect currently free models:
+
+```powershell
+$raw = Invoke-WebRequest -UseBasicParsing "https://openrouter.ai/api/v1/models"
+($raw.Content | ConvertFrom-Json).data |
+    Where-Object { ([double]$_.pricing.prompt -eq 0) -and ([double]$_.pricing.completion -eq 0) } |
+    Select-Object id,name
 ```
 
 ## Running the Application
 
-**Option 1: Use the start script**
-```bash
-./start.sh
-```
-
-**Option 2: Run manually**
+Open two terminals from the repository root.
 
 Terminal 1 (Backend):
-```bash
-uv run python -m backend.main
+
+```powershell
+py -3.11 -m uv run python -m backend.main
 ```
 
 Terminal 2 (Frontend):
-```bash
-cd frontend
-npm run dev
+
+```powershell
+npm --prefix frontend run dev
 ```
 
 Then open http://localhost:5173 in your browser.
+
+### Notes
+
+- Backend runs on http://localhost:8001
+- Frontend runs on http://localhost:5173
+- `start.sh` is a Bash script and is mainly for macOS/Linux environments.
 
 ## Tech Stack
 

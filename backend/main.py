@@ -11,6 +11,7 @@ import asyncio
 
 from . import storage
 from .council import run_full_council, generate_conversation_title, stage1_collect_responses, stage2_collect_rankings, stage3_synthesize_final, calculate_aggregate_rankings
+from .config import COUNCIL_MODELS
 
 app = FastAPI(title="LLM Council API")
 
@@ -139,6 +140,22 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
 
     async def event_generator():
         try:
+            metadata = {
+                "requested_models": COUNCIL_MODELS,
+                "label_to_model": {},
+                "aggregate_rankings": [],
+                "failures": {
+                    "stage1": [],
+                    "stage2": [],
+                    "stage3": [],
+                },
+                "fallbacks": {
+                    "stage1": [],
+                    "stage2": [],
+                    "stage3": [],
+                },
+            }
+
             # Add user message
             storage.add_user_message(conversation_id, request.content)
 
@@ -149,19 +166,61 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
 
             # Stage 1: Collect responses
             yield f"data: {json.dumps({'type': 'stage1_start'})}\n\n"
-            stage1_results = await stage1_collect_responses(request.content)
-            yield f"data: {json.dumps({'type': 'stage1_complete', 'data': stage1_results})}\n\n"
+            stage1_results, stage1_failures = await stage1_collect_responses(request.content)
+            metadata["failures"]["stage1"] = stage1_failures
+            metadata["fallbacks"]["stage1"] = [
+                {
+                    "requested_model": result.get("requested_model"),
+                    "used_model": result.get("model"),
+                }
+                for result in stage1_results
+                if result.get("requested_model") and result.get("requested_model") != result.get("model")
+            ]
+            yield f"data: {json.dumps({'type': 'stage1_complete', 'data': stage1_results, 'metadata': metadata})}\n\n"
+
+            if not stage1_results:
+                stage3_result = {
+                    "model": "error",
+                    "response": "All models failed to respond. Please try again.",
+                }
+                yield f"data: {json.dumps({'type': 'stage3_complete', 'data': stage3_result, 'metadata': metadata})}\n\n"
+                storage.add_assistant_message(
+                    conversation_id,
+                    stage1_results,
+                    [],
+                    stage3_result,
+                )
+                yield f"data: {json.dumps({'type': 'complete'})}\n\n"
+                return
 
             # Stage 2: Collect rankings
             yield f"data: {json.dumps({'type': 'stage2_start'})}\n\n"
-            stage2_results, label_to_model = await stage2_collect_rankings(request.content, stage1_results)
-            aggregate_rankings = calculate_aggregate_rankings(stage2_results, label_to_model)
-            yield f"data: {json.dumps({'type': 'stage2_complete', 'data': stage2_results, 'metadata': {'label_to_model': label_to_model, 'aggregate_rankings': aggregate_rankings}})}\n\n"
+            stage2_results, label_to_model, stage2_failures = await stage2_collect_rankings(request.content, stage1_results)
+            metadata["label_to_model"] = label_to_model
+            metadata["aggregate_rankings"] = calculate_aggregate_rankings(stage2_results, label_to_model)
+            metadata["failures"]["stage2"] = stage2_failures
+            metadata["fallbacks"]["stage2"] = [
+                {
+                    "requested_model": result.get("requested_model"),
+                    "used_model": result.get("model"),
+                }
+                for result in stage2_results
+                if result.get("requested_model") and result.get("requested_model") != result.get("model")
+            ]
+            yield f"data: {json.dumps({'type': 'stage2_complete', 'data': stage2_results, 'metadata': metadata})}\n\n"
 
             # Stage 3: Synthesize final answer
             yield f"data: {json.dumps({'type': 'stage3_start'})}\n\n"
-            stage3_result = await stage3_synthesize_final(request.content, stage1_results, stage2_results)
-            yield f"data: {json.dumps({'type': 'stage3_complete', 'data': stage3_result})}\n\n"
+            stage3_result, stage3_failure = await stage3_synthesize_final(request.content, stage1_results, stage2_results)
+            if stage3_failure is not None:
+                metadata["failures"]["stage3"] = [stage3_failure]
+            metadata["fallbacks"]["stage3"] = []
+            if stage3_result.get("requested_model") and stage3_result.get("requested_model") != stage3_result.get("model"):
+                metadata["fallbacks"]["stage3"] = [{
+                    "requested_model": stage3_result.get("requested_model"),
+                    "used_model": stage3_result.get("model"),
+                }]
+            yield f"data: {json.dumps({'type': 'stage3_complete', 'data': stage3_result, 'metadata': metadata})}\n\n"
 
             # Wait for title generation if it was started
             if title_task:
