@@ -106,6 +106,9 @@ function App() {
               const messages = [...prev.messages];
               const lastMsg = messages[messages.length - 1];
               lastMsg.stage1 = event.data;
+              if (event.metadata) {
+                lastMsg.metadata = event.metadata;
+              }
               lastMsg.loading.stage1 = false;
               return { ...prev, messages };
             });
@@ -145,6 +148,9 @@ function App() {
               const messages = [...prev.messages];
               const lastMsg = messages[messages.length - 1];
               lastMsg.stage3 = event.data;
+              if (event.metadata) {
+                lastMsg.metadata = event.metadata;
+              }
               lastMsg.loading.stage3 = false;
               return { ...prev, messages };
             });

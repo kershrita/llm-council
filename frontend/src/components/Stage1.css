@@ -13,6 +13,12 @@
   font-weight: 600;
 }
 
+.stage-meta {
+  margin: -6px 0 14px 0;
+  color: #6b7280;
+  font-size: 12px;
+}
+
 .tabs {
   display: flex;
   gap: 8px;

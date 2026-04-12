@@ -1,9 +1,85 @@
 import { useState, useEffect, useRef } from 'react';
-import ReactMarkdown from 'react-markdown';
 import Stage1 from './Stage1';
 import Stage2 from './Stage2';
 import Stage3 from './Stage3';
+import MarkdownRenderer from './MarkdownRenderer';
 import './ChatInterface.css';
+
+const STAGE_LABELS = {
+  stage1: 'Stage 1',
+  stage2: 'Stage 2',
+  stage3: 'Stage 3',
+};
+
+function flattenStageItems(stageMap = {}) {
+  return Object.entries(stageMap).flatMap(([stageKey, items]) =>
+    (items || []).map((item) => ({
+      stageKey,
+      ...item,
+    }))
+  );
+}
+
+function formatFailureReason(failure) {
+  if (failure?.status_code === 429) {
+    return 'Rate limited on free tier (HTTP 429)';
+  }
+
+  if (failure?.status_code) {
+    return `HTTP ${failure.status_code}`;
+  }
+
+  return 'Request failed';
+}
+
+function ModelAvailability({ metadata }) {
+  const failureItems = flattenStageItems(metadata?.failures);
+  const fallbackItems = flattenStageItems(metadata?.fallbacks);
+
+  if (failureItems.length === 0 && fallbackItems.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="model-availability-panel">
+      <h4>Model Availability</h4>
+
+      {failureItems.length > 0 && (
+        <div className="model-availability-section">
+          <strong>Failed models</strong>
+          <ul>
+            {failureItems.map((failure, index) => (
+              <li key={`failure-${index}`}>
+                <span className="availability-stage">
+                  {STAGE_LABELS[failure.stageKey] || failure.stageKey}:
+                </span>{' '}
+                <span className="availability-model">{failure.model}</span>{' '}
+                <span className="availability-reason">({formatFailureReason(failure)})</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {fallbackItems.length > 0 && (
+        <div className="model-availability-section">
+          <strong>Fallback reroutes</strong>
+          <ul>
+            {fallbackItems.map((fallback, index) => (
+              <li key={`fallback-${index}`}>
+                <span className="availability-stage">
+                  {STAGE_LABELS[fallback.stageKey] || fallback.stageKey}:
+                </span>{' '}
+                <span className="availability-model">{fallback.requested_model}</span>{' '}
+                <span className="availability-reason">-&gt; {fallback.used_model}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function ChatInterface({
   conversation,
@@ -64,13 +140,14 @@ export default function ChatInterface({
                   <div className="message-label">You</div>
                   <div className="message-content">
                     <div className="markdown-content">
-                      <ReactMarkdown>{msg.content}</ReactMarkdown>
+                      <MarkdownRenderer content={msg.content} />
                     </div>
                   </div>
                 </div>
               ) : (
                 <div className="assistant-message">
                   <div className="message-label">LLM Council</div>
+                  <ModelAvailability metadata={msg.metadata} />
 
                   {/* Stage 1 */}
                   {msg.loading?.stage1 && (
@@ -79,7 +156,12 @@ export default function ChatInterface({
                       <span>Running Stage 1: Collecting individual responses...</span>
                     </div>
                   )}
-                  {msg.stage1 && <Stage1 responses={msg.stage1} />}
+                  {msg.stage1 && (
+                    <Stage1
+                      responses={msg.stage1}
+                      expectedCount={msg.metadata?.requested_models?.length}
+                    />
+                  )}
 
                   {/* Stage 2 */}
                   {msg.loading?.stage2 && (
