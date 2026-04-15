@@ -60,6 +60,7 @@ function App() {
   const handleSendMessage = async (content) => {
     if (!currentConversationId) return;
 
+    let receivedStreamEvent = false;
     setIsLoading(true);
     try {
       // Optimistically add user message to UI
@@ -91,6 +92,8 @@ function App() {
 
       // Send message with streaming
       await api.sendMessageStream(currentConversationId, content, (eventType, event) => {
+        receivedStreamEvent = true;
+
         switch (eventType) {
           case 'stage1_start':
             setCurrentConversation((prev) => {
@@ -169,6 +172,31 @@ function App() {
 
           case 'error':
             console.error('Stream error:', event.message);
+            setCurrentConversation((prev) => {
+              if (!prev || !prev.messages || prev.messages.length === 0) {
+                return prev;
+              }
+
+              const messages = [...prev.messages];
+              const lastMsg = messages[messages.length - 1];
+
+              if (lastMsg?.role === 'assistant') {
+                lastMsg.loading = {
+                  stage1: false,
+                  stage2: false,
+                  stage3: false,
+                };
+
+                if (!lastMsg.stage3) {
+                  lastMsg.stage3 = {
+                    model: 'system/error',
+                    response: event.message || 'The request failed before completion.',
+                  };
+                }
+              }
+
+              return { ...prev, messages };
+            });
             setIsLoading(false);
             break;
 
@@ -178,11 +206,15 @@ function App() {
       });
     } catch (error) {
       console.error('Failed to send message:', error);
-      // Remove optimistic messages on error
-      setCurrentConversation((prev) => ({
-        ...prev,
-        messages: prev.messages.slice(0, -2),
-      }));
+
+      if (!receivedStreamEvent) {
+        // Remove optimistic messages when streaming never started.
+        setCurrentConversation((prev) => ({
+          ...prev,
+          messages: prev.messages.slice(0, -2),
+        }));
+      }
+    } finally {
       setIsLoading(false);
     }
   };

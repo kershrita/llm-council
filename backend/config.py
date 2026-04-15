@@ -30,8 +30,13 @@ FALLBACK_MODELS = [
 ]
 
 # Retry settings for transient OpenRouter failures (429/5xx/timeouts).
-MAX_MODEL_RETRIES = 2
-MODEL_RETRY_BASE_DELAY_SECONDS = 1.0
+MAX_MODEL_RETRIES = int(os.getenv("MAX_MODEL_RETRIES", "0"))
+MODEL_RETRY_BASE_DELAY_SECONDS = float(os.getenv("MODEL_RETRY_BASE_DELAY_SECONDS", "1.0"))
+
+# Runtime limits to prevent long silent waits.
+MODEL_REQUEST_TIMEOUT_SECONDS = float(os.getenv("MODEL_REQUEST_TIMEOUT_SECONDS", "30"))
+TITLE_REQUEST_TIMEOUT_SECONDS = float(os.getenv("TITLE_REQUEST_TIMEOUT_SECONDS", "20"))
+MAX_FALLBACK_MODELS = int(os.getenv("MAX_FALLBACK_MODELS", "1"))
 
 # OpenRouter API endpoint
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"

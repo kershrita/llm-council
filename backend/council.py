@@ -2,7 +2,13 @@
 
 from typing import List, Dict, Any, Tuple, Optional
 from .openrouter import query_models_parallel, query_model
-from .config import COUNCIL_MODELS, CHAIRMAN_MODEL, TITLE_MODEL, FALLBACK_MODELS
+from .config import (
+    COUNCIL_MODELS,
+    CHAIRMAN_MODEL,
+    TITLE_MODEL,
+    FALLBACK_MODELS,
+    TITLE_REQUEST_TIMEOUT_SECONDS,
+)
 
 
 async def stage1_collect_responses(
@@ -33,8 +39,9 @@ async def stage1_collect_responses(
         if response.get("ok"):
             resolved_model = response.get("model", requested_model)
             stage1_results.append({
-                "model": resolved_model,
+                "model": requested_model,
                 "requested_model": requested_model,
+                "actual_model": resolved_model,
                 "response": response.get("content", ""),
             })
             continue
@@ -127,8 +134,9 @@ Now provide your evaluation and ranking:"""
             full_text = response.get("content", "")
             parsed = parse_ranking_from_text(full_text)
             stage2_results.append({
-                "model": resolved_model,
+                "model": requested_model,
                 "requested_model": requested_model,
+                "actual_model": resolved_model,
                 "ranking": full_text,
                 "parsed_ranking": parsed,
             })
@@ -208,13 +216,15 @@ Provide a clear, well-reasoned final answer that represents the council's collec
         return {
             "model": CHAIRMAN_MODEL,
             "requested_model": CHAIRMAN_MODEL,
+            "actual_model": None,
             "response": "Error: Unable to generate final synthesis.",
         }, failure
 
     resolved_model = response.get("model", CHAIRMAN_MODEL)
     return {
-        "model": resolved_model,
+        "model": CHAIRMAN_MODEL,
         "requested_model": CHAIRMAN_MODEL,
+        "actual_model": resolved_model,
         "response": response.get("content", ""),
     }, None
 
@@ -328,7 +338,7 @@ Title:"""
     response = await query_model(
         TITLE_MODEL,
         messages,
-        timeout=30.0,
+        timeout=TITLE_REQUEST_TIMEOUT_SECONDS,
         max_retries=1,
         fallback_models=FALLBACK_MODELS,
     )
@@ -404,25 +414,31 @@ async def run_full_council(user_query: str) -> Tuple[List, List, Dict, Dict]:
 
     stage1_fallbacks = [
         {
-            "requested_model": result.get("requested_model"),
-            "used_model": result.get("model"),
+            "requested_model": result.get("requested_model") or result.get("model"),
+            "used_model": result.get("actual_model") or result.get("model"),
         }
         for result in stage1_results
-        if result.get("requested_model") and result.get("requested_model") != result.get("model")
+        if (result.get("requested_model") or result.get("model"))
+        and (result.get("actual_model") or result.get("model"))
+        and (result.get("requested_model") or result.get("model")) != (result.get("actual_model") or result.get("model"))
     ]
     stage2_fallbacks = [
         {
-            "requested_model": result.get("requested_model"),
-            "used_model": result.get("model"),
+            "requested_model": result.get("requested_model") or result.get("model"),
+            "used_model": result.get("actual_model") or result.get("model"),
         }
         for result in stage2_results
-        if result.get("requested_model") and result.get("requested_model") != result.get("model")
+        if (result.get("requested_model") or result.get("model"))
+        and (result.get("actual_model") or result.get("model"))
+        and (result.get("requested_model") or result.get("model")) != (result.get("actual_model") or result.get("model"))
     ]
     stage3_fallbacks = []
-    if stage3_result.get("requested_model") and stage3_result.get("requested_model") != stage3_result.get("model"):
+    requested_stage3_model = stage3_result.get("requested_model") or stage3_result.get("model")
+    actual_stage3_model = stage3_result.get("actual_model") or stage3_result.get("model")
+    if requested_stage3_model and actual_stage3_model and requested_stage3_model != actual_stage3_model:
         stage3_fallbacks.append({
-            "requested_model": stage3_result.get("requested_model"),
-            "used_model": stage3_result.get("model"),
+            "requested_model": requested_stage3_model,
+            "used_model": actual_stage3_model,
         })
 
     # Prepare metadata

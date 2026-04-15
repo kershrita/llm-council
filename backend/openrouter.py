@@ -8,6 +8,8 @@ from .config import (
     OPENROUTER_API_URL,
     MAX_MODEL_RETRIES,
     MODEL_RETRY_BASE_DELAY_SECONDS,
+    MODEL_REQUEST_TIMEOUT_SECONDS,
+    MAX_FALLBACK_MODELS,
 )
 
 
@@ -30,7 +32,12 @@ async def _query_model_once(
         "messages": messages,
     }
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    client_timeout = httpx.Timeout(
+        timeout=timeout,
+        connect=min(timeout, 10.0),
+    )
+
+    async with httpx.AsyncClient(timeout=client_timeout) as client:
         response = await client.post(
             OPENROUTER_API_URL,
             headers=headers,
@@ -49,7 +56,7 @@ async def _query_model_once(
 async def query_model(
     model: str,
     messages: List[Dict[str, str]],
-    timeout: float = 120.0,
+    timeout: float = MODEL_REQUEST_TIMEOUT_SECONDS,
     max_retries: int = MAX_MODEL_RETRIES,
     retry_base_delay: float = MODEL_RETRY_BASE_DELAY_SECONDS,
     fallback_models: Optional[List[str]] = None,
@@ -65,17 +72,35 @@ async def query_model(
     Returns:
         Dict with success/error details and payload fields.
     """
+    if not OPENROUTER_API_KEY:
+        return {
+            "ok": False,
+            "requested_model": model,
+            "model": model,
+            "content": None,
+            "reasoning_details": None,
+            "status_code": None,
+            "error": "OPENROUTER_API_KEY is not set",
+            "attempted_models": [model],
+            "fallback_used": False,
+        }
+
     candidate_models = [model]
     if fallback_models:
+        limited_fallbacks = fallback_models[:MAX_FALLBACK_MODELS]
         candidate_models.extend(
-            fallback for fallback in fallback_models if fallback not in candidate_models
+            fallback for fallback in limited_fallbacks if fallback not in candidate_models
         )
 
     attempted_models: List[str] = []
     last_error = "Unknown error"
     last_status_code: Optional[int] = None
+    stop_after_current_candidate = False
 
     for candidate_model in candidate_models:
+        if stop_after_current_candidate:
+            break
+
         attempted_models.append(candidate_model)
 
         for attempt in range(max_retries + 1):
@@ -112,6 +137,11 @@ async def query_model(
                     delay = retry_base_delay * (2 ** attempt)
                     await asyncio.sleep(delay)
                     continue
+
+                # If we exhausted retries on a timeout, don't chain into extra
+                # fallback models that are likely to time out the same way.
+                if isinstance(exc, httpx.TimeoutException):
+                    stop_after_current_candidate = True
                 break
 
     print(f"Error querying model {model}: {last_error}")
@@ -131,7 +161,7 @@ async def query_model(
 async def query_models_parallel(
     models: List[str],
     messages: List[Dict[str, str]],
-    timeout: float = 120.0,
+    timeout: float = MODEL_REQUEST_TIMEOUT_SECONDS,
     max_retries: int = MAX_MODEL_RETRIES,
     fallback_models: Optional[List[str]] = None,
 ) -> Dict[str, Dict[str, Any]]:

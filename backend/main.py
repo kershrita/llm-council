@@ -139,22 +139,30 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
     is_first_message = len(conversation["messages"]) == 0
 
     async def event_generator():
+        metadata = {
+            "requested_models": COUNCIL_MODELS,
+            "label_to_model": {},
+            "aggregate_rankings": [],
+            "failures": {
+                "stage1": [],
+                "stage2": [],
+                "stage3": [],
+            },
+            "fallbacks": {
+                "stage1": [],
+                "stage2": [],
+                "stage3": [],
+            },
+        }
+        stage1_results: List[Dict[str, Any]] = []
+        stage2_results: List[Dict[str, Any]] = []
+        stage3_result: Dict[str, Any] = {
+            "model": "error",
+            "response": "The council request did not complete.",
+        }
+        assistant_saved = False
+
         try:
-            metadata = {
-                "requested_models": COUNCIL_MODELS,
-                "label_to_model": {},
-                "aggregate_rankings": [],
-                "failures": {
-                    "stage1": [],
-                    "stage2": [],
-                    "stage3": [],
-                },
-                "fallbacks": {
-                    "stage1": [],
-                    "stage2": [],
-                    "stage3": [],
-                },
-            }
 
             # Add user message
             storage.add_user_message(conversation_id, request.content)
@@ -170,11 +178,13 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
             metadata["failures"]["stage1"] = stage1_failures
             metadata["fallbacks"]["stage1"] = [
                 {
-                    "requested_model": result.get("requested_model"),
-                    "used_model": result.get("model"),
+                    "requested_model": result.get("requested_model") or result.get("model"),
+                    "used_model": result.get("actual_model") or result.get("model"),
                 }
                 for result in stage1_results
-                if result.get("requested_model") and result.get("requested_model") != result.get("model")
+                if (result.get("requested_model") or result.get("model"))
+                and (result.get("actual_model") or result.get("model"))
+                and (result.get("requested_model") or result.get("model")) != (result.get("actual_model") or result.get("model"))
             ]
             yield f"data: {json.dumps({'type': 'stage1_complete', 'data': stage1_results, 'metadata': metadata})}\n\n"
 
@@ -190,6 +200,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                     [],
                     stage3_result,
                 )
+                assistant_saved = True
                 yield f"data: {json.dumps({'type': 'complete'})}\n\n"
                 return
 
@@ -201,11 +212,13 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
             metadata["failures"]["stage2"] = stage2_failures
             metadata["fallbacks"]["stage2"] = [
                 {
-                    "requested_model": result.get("requested_model"),
-                    "used_model": result.get("model"),
+                    "requested_model": result.get("requested_model") or result.get("model"),
+                    "used_model": result.get("actual_model") or result.get("model"),
                 }
                 for result in stage2_results
-                if result.get("requested_model") and result.get("requested_model") != result.get("model")
+                if (result.get("requested_model") or result.get("model"))
+                and (result.get("actual_model") or result.get("model"))
+                and (result.get("requested_model") or result.get("model")) != (result.get("actual_model") or result.get("model"))
             ]
             yield f"data: {json.dumps({'type': 'stage2_complete', 'data': stage2_results, 'metadata': metadata})}\n\n"
 
@@ -215,10 +228,12 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
             if stage3_failure is not None:
                 metadata["failures"]["stage3"] = [stage3_failure]
             metadata["fallbacks"]["stage3"] = []
-            if stage3_result.get("requested_model") and stage3_result.get("requested_model") != stage3_result.get("model"):
+            requested_stage3_model = stage3_result.get("requested_model") or stage3_result.get("model")
+            actual_stage3_model = stage3_result.get("actual_model") or stage3_result.get("model")
+            if requested_stage3_model and actual_stage3_model and requested_stage3_model != actual_stage3_model:
                 metadata["fallbacks"]["stage3"] = [{
-                    "requested_model": stage3_result.get("requested_model"),
-                    "used_model": stage3_result.get("model"),
+                    "requested_model": requested_stage3_model,
+                    "used_model": actual_stage3_model,
                 }]
             yield f"data: {json.dumps({'type': 'stage3_complete', 'data': stage3_result, 'metadata': metadata})}\n\n"
 
@@ -235,13 +250,41 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                 stage2_results,
                 stage3_result
             )
+            assistant_saved = True
 
             # Send completion event
             yield f"data: {json.dumps({'type': 'complete'})}\n\n"
 
         except Exception as e:
-            # Send error event
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            error_message = str(e)
+            metadata["failures"]["stage3"] = [{
+                "model": "stream",
+                "status_code": None,
+                "error": error_message,
+                "attempted_models": [],
+            }]
+            stage3_result = {
+                "model": "error",
+                "requested_model": "error",
+                "actual_model": None,
+                "response": f"Error: {error_message}",
+            }
+
+            if not assistant_saved:
+                try:
+                    storage.add_assistant_message(
+                        conversation_id,
+                        stage1_results,
+                        stage2_results,
+                        stage3_result,
+                    )
+                    assistant_saved = True
+                except Exception:
+                    pass
+
+            yield f"data: {json.dumps({'type': 'error', 'message': error_message})}\n\n"
+            yield f"data: {json.dumps({'type': 'stage3_complete', 'data': stage3_result, 'metadata': metadata})}\n\n"
+            yield f"data: {json.dumps({'type': 'complete'})}\n\n"
 
     return StreamingResponse(
         event_generator(),

@@ -89,27 +89,69 @@ export const api = {
       throw new Error('Failed to send message');
     }
 
+    if (!response.body) {
+      throw new Error('Streaming response body is unavailable');
+    }
+
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
+    let buffer = '';
+    let sawTerminalEvent = false;
+
+    const dispatchEventBlock = (eventBlock) => {
+      const dataLines = eventBlock
+        .split('\n')
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice(5).trimStart());
+
+      if (dataLines.length === 0) {
+        return;
+      }
+
+      const payload = dataLines.join('\n');
+      try {
+        const event = JSON.parse(payload);
+        if (event.type === 'complete' || event.type === 'error') {
+          sawTerminalEvent = true;
+        }
+        onEvent(event.type, event);
+      } catch (e) {
+        console.error('Failed to parse SSE event:', payload, e);
+      }
+    };
 
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
-
-      const chunk = decoder.decode(value);
-      const lines = chunk.split('\n');
-
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const data = line.slice(6);
-          try {
-            const event = JSON.parse(data);
-            onEvent(event.type, event);
-          } catch (e) {
-            console.error('Failed to parse SSE event:', e);
-          }
-        }
+      if (done) {
+        break;
       }
+
+      buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+
+      let separatorIndex = buffer.indexOf('\n\n');
+      while (separatorIndex !== -1) {
+        const eventBlock = buffer.slice(0, separatorIndex).trim();
+        buffer = buffer.slice(separatorIndex + 2);
+
+        if (eventBlock) {
+          dispatchEventBlock(eventBlock);
+        }
+
+        separatorIndex = buffer.indexOf('\n\n');
+      }
+    }
+
+    buffer += decoder.decode().replace(/\r\n/g, '\n');
+    const trailingBlock = buffer.trim();
+    if (trailingBlock) {
+      dispatchEventBlock(trailingBlock);
+    }
+
+    if (!sawTerminalEvent) {
+      onEvent('error', {
+        type: 'error',
+        message: 'Connection closed before completion. Please retry.',
+      });
     }
   },
 };
