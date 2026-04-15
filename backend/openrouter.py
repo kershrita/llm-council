@@ -1,7 +1,9 @@
 """OpenRouter API client for making LLM requests."""
 
 import asyncio
+import logging
 import httpx
+from time import perf_counter
 from typing import List, Dict, Any, Optional
 from .config import (
     OPENROUTER_API_KEY,
@@ -11,6 +13,9 @@ from .config import (
     MODEL_REQUEST_TIMEOUT_SECONDS,
     MAX_FALLBACK_MODELS,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
@@ -60,6 +65,7 @@ async def query_model(
     max_retries: int = MAX_MODEL_RETRIES,
     retry_base_delay: float = MODEL_RETRY_BASE_DELAY_SECONDS,
     fallback_models: Optional[List[str]] = None,
+    trace_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Query a single model via OpenRouter API.
@@ -72,7 +78,14 @@ async def query_model(
     Returns:
         Dict with success/error details and payload fields.
     """
+    trace_value = trace_id or "-"
+
     if not OPENROUTER_API_KEY:
+        logger.error(
+            "Model query skipped due to missing API key trace_id=%s requested_model=%s",
+            trace_value,
+            model,
+        )
         return {
             "ok": False,
             "requested_model": model,
@@ -92,20 +105,61 @@ async def query_model(
             fallback for fallback in limited_fallbacks if fallback not in candidate_models
         )
 
+    logger.info(
+        "Model query start trace_id=%s requested_model=%s candidate_count=%d timeout_s=%.1f max_retries=%d",
+        trace_value,
+        model,
+        len(candidate_models),
+        timeout,
+        max_retries,
+    )
+
     attempted_models: List[str] = []
     last_error = "Unknown error"
     last_status_code: Optional[int] = None
     stop_after_current_candidate = False
+    request_started = perf_counter()
 
     for candidate_model in candidate_models:
         if stop_after_current_candidate:
+            logger.warning(
+                "Model query halted after timeout exhaustion trace_id=%s requested_model=%s attempted_models=%s",
+                trace_value,
+                model,
+                attempted_models,
+            )
             break
 
         attempted_models.append(candidate_model)
+        if candidate_model != model:
+            logger.warning(
+                "Model fallback candidate selected trace_id=%s requested_model=%s fallback_model=%s",
+                trace_value,
+                model,
+                candidate_model,
+            )
 
         for attempt in range(max_retries + 1):
+            attempt_number = attempt + 1
+            logger.debug(
+                "Model query attempt trace_id=%s requested_model=%s candidate_model=%s attempt=%d",
+                trace_value,
+                model,
+                candidate_model,
+                attempt_number,
+            )
             try:
                 payload = await _query_model_once(candidate_model, messages, timeout)
+                elapsed_ms = int((perf_counter() - request_started) * 1000)
+                logger.info(
+                    "Model query success trace_id=%s requested_model=%s used_model=%s attempt=%d fallback_used=%s elapsed_ms=%d",
+                    trace_value,
+                    model,
+                    candidate_model,
+                    attempt_number,
+                    candidate_model != model,
+                    elapsed_ms,
+                )
                 return {
                     "ok": True,
                     "requested_model": model,
@@ -126,8 +180,27 @@ async def query_model(
 
                 if retryable and attempt < max_retries:
                     delay = retry_base_delay * (2 ** attempt)
+                    logger.warning(
+                        "Model query HTTP retry trace_id=%s requested_model=%s candidate_model=%s status_code=%s attempt=%d delay_s=%.1f",
+                        trace_value,
+                        model,
+                        candidate_model,
+                        status_code,
+                        attempt_number,
+                        delay,
+                    )
                     await asyncio.sleep(delay)
                     continue
+
+                logger.warning(
+                    "Model query HTTP failure trace_id=%s requested_model=%s candidate_model=%s status_code=%s attempt=%d error=%s",
+                    trace_value,
+                    model,
+                    candidate_model,
+                    status_code,
+                    attempt_number,
+                    last_error,
+                )
                 break
 
             except Exception as exc:  # Network and timeout failures
@@ -135,6 +208,15 @@ async def query_model(
                 last_status_code = None
                 if attempt < max_retries:
                     delay = retry_base_delay * (2 ** attempt)
+                    logger.warning(
+                        "Model query network retry trace_id=%s requested_model=%s candidate_model=%s attempt=%d delay_s=%.1f error=%s",
+                        trace_value,
+                        model,
+                        candidate_model,
+                        attempt_number,
+                        delay,
+                        last_error,
+                    )
                     await asyncio.sleep(delay)
                     continue
 
@@ -142,9 +224,28 @@ async def query_model(
                 # fallback models that are likely to time out the same way.
                 if isinstance(exc, httpx.TimeoutException):
                     stop_after_current_candidate = True
+
+                logger.warning(
+                    "Model query network failure trace_id=%s requested_model=%s candidate_model=%s attempt=%d timeout=%s error=%s",
+                    trace_value,
+                    model,
+                    candidate_model,
+                    attempt_number,
+                    isinstance(exc, httpx.TimeoutException),
+                    last_error,
+                )
                 break
 
-    print(f"Error querying model {model}: {last_error}")
+    elapsed_ms = int((perf_counter() - request_started) * 1000)
+    logger.error(
+        "Model query failed trace_id=%s requested_model=%s attempted_models=%s status_code=%s elapsed_ms=%d error=%s",
+        trace_value,
+        model,
+        attempted_models,
+        last_status_code,
+        elapsed_ms,
+        last_error,
+    )
     return {
         "ok": False,
         "requested_model": model,
@@ -164,6 +265,7 @@ async def query_models_parallel(
     timeout: float = MODEL_REQUEST_TIMEOUT_SECONDS,
     max_retries: int = MAX_MODEL_RETRIES,
     fallback_models: Optional[List[str]] = None,
+    trace_id: Optional[str] = None,
 ) -> Dict[str, Dict[str, Any]]:
     """
     Query multiple models in parallel.
@@ -175,6 +277,15 @@ async def query_models_parallel(
     Returns:
         Dict mapping requested model identifier to structured query result.
     """
+    trace_value = trace_id or "-"
+    started = perf_counter()
+    logger.info(
+        "Parallel model query start trace_id=%s model_count=%d timeout_s=%.1f",
+        trace_value,
+        len(models),
+        timeout,
+    )
+
     # Create tasks for all models
     tasks = [
         query_model(
@@ -183,12 +294,23 @@ async def query_models_parallel(
             timeout=timeout,
             max_retries=max_retries,
             fallback_models=fallback_models,
+            trace_id=trace_id,
         )
         for model in models
     ]
 
     # Wait for all to complete
     responses = await asyncio.gather(*tasks)
+
+    success_count = sum(1 for response in responses if response.get("ok"))
+    elapsed_ms = int((perf_counter() - started) * 1000)
+    logger.info(
+        "Parallel model query complete trace_id=%s success=%d failed=%d elapsed_ms=%d",
+        trace_value,
+        success_count,
+        len(models) - success_count,
+        elapsed_ms,
+    )
 
     # Map models to their responses
     return {model: response for model, response in zip(models, responses)}

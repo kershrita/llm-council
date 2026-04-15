@@ -1,11 +1,15 @@
 """JSON-based storage for conversations."""
 
 import json
+import logging
 import os
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 from .config import DATA_DIR
+
+
+logger = logging.getLogger(__name__)
 
 
 def ensure_data_dir():
@@ -42,6 +46,8 @@ def create_conversation(conversation_id: str) -> Dict[str, Any]:
     with open(path, 'w') as f:
         json.dump(conversation, f, indent=2)
 
+    logger.info("Storage created conversation conversation_id=%s", conversation_id)
+
     return conversation
 
 
@@ -58,10 +64,18 @@ def get_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
     path = get_conversation_path(conversation_id)
 
     if not os.path.exists(path):
+        logger.warning("Storage conversation not found conversation_id=%s", conversation_id)
         return None
 
     with open(path, 'r') as f:
-        return json.load(f)
+        conversation = json.load(f)
+
+    logger.debug(
+        "Storage loaded conversation conversation_id=%s message_count=%d",
+        conversation_id,
+        len(conversation.get("messages", [])),
+    )
+    return conversation
 
 
 def save_conversation(conversation: Dict[str, Any]):
@@ -76,6 +90,12 @@ def save_conversation(conversation: Dict[str, Any]):
     path = get_conversation_path(conversation['id'])
     with open(path, 'w') as f:
         json.dump(conversation, f, indent=2)
+
+    logger.debug(
+        "Storage saved conversation conversation_id=%s message_count=%d",
+        conversation.get("id"),
+        len(conversation.get("messages", [])),
+    )
 
 
 def list_conversations() -> List[Dict[str, Any]]:
@@ -104,6 +124,8 @@ def list_conversations() -> List[Dict[str, Any]]:
     # Sort by creation time, newest first
     conversations.sort(key=lambda x: x["created_at"], reverse=True)
 
+    logger.info("Storage listed conversations count=%d", len(conversations))
+
     return conversations
 
 
@@ -125,6 +147,11 @@ def add_user_message(conversation_id: str, content: str):
     })
 
     save_conversation(conversation)
+    logger.info(
+        "Storage added user message conversation_id=%s content_chars=%d",
+        conversation_id,
+        len(content),
+    )
 
 
 def add_assistant_message(
@@ -154,6 +181,12 @@ def add_assistant_message(
     })
 
     save_conversation(conversation)
+    logger.info(
+        "Storage added assistant message conversation_id=%s stage1=%d stage2=%d",
+        conversation_id,
+        len(stage1),
+        len(stage2),
+    )
 
 
 def update_conversation_title(conversation_id: str, title: str):
@@ -170,3 +203,8 @@ def update_conversation_title(conversation_id: str, title: str):
 
     conversation["title"] = title
     save_conversation(conversation)
+    logger.info(
+        "Storage updated conversation title conversation_id=%s title=%s",
+        conversation_id,
+        title,
+    )

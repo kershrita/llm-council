@@ -5,6 +5,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Logging level for backend modules (DEBUG, INFO, WARNING, ERROR)
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
 # OpenRouter API key
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 

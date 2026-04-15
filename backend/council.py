@@ -1,5 +1,7 @@
 """3-stage LLM Council orchestration."""
 
+import logging
+from time import perf_counter
 from typing import List, Dict, Any, Tuple, Optional
 from .openrouter import query_models_parallel, query_model
 from .config import (
@@ -11,8 +13,12 @@ from .config import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
 async def stage1_collect_responses(
     user_query: str,
+    trace_id: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Stage 1: Collect individual responses from all council models.
@@ -23,6 +29,15 @@ async def stage1_collect_responses(
     Returns:
         Tuple of (successful responses, failed model attempts)
     """
+    trace_value = trace_id or "-"
+    started = perf_counter()
+    logger.info(
+        "Stage 1 start trace_id=%s model_count=%d query_chars=%d",
+        trace_value,
+        len(COUNCIL_MODELS),
+        len(user_query),
+    )
+
     messages = [{"role": "user", "content": user_query}]
 
     # Query all models in parallel
@@ -30,6 +45,7 @@ async def stage1_collect_responses(
         COUNCIL_MODELS,
         messages,
         fallback_models=FALLBACK_MODELS,
+        trace_id=trace_id,
     )
 
     # Format results
@@ -53,12 +69,28 @@ async def stage1_collect_responses(
             "attempted_models": response.get("attempted_models", [requested_model]),
         })
 
+    elapsed_ms = int((perf_counter() - started) * 1000)
+    logger.info(
+        "Stage 1 complete trace_id=%s success=%d failed=%d elapsed_ms=%d",
+        trace_value,
+        len(stage1_results),
+        len(failed_models),
+        elapsed_ms,
+    )
+    if failed_models:
+        logger.warning(
+            "Stage 1 failures trace_id=%s failed_models=%s",
+            trace_value,
+            [failure["model"] for failure in failed_models],
+        )
+
     return stage1_results, failed_models
 
 
 async def stage2_collect_rankings(
     user_query: str,
-    stage1_results: List[Dict[str, Any]]
+    stage1_results: List[Dict[str, Any]],
+    trace_id: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, str], List[Dict[str, Any]]]:
     """
     Stage 2: Each model ranks the anonymized responses.
@@ -70,6 +102,15 @@ async def stage2_collect_rankings(
     Returns:
         Tuple of (rankings list, label_to_model mapping, failed model attempts)
     """
+    trace_value = trace_id or "-"
+    started = perf_counter()
+    logger.info(
+        "Stage 2 start trace_id=%s model_count=%d candidate_responses=%d",
+        trace_value,
+        len(COUNCIL_MODELS),
+        len(stage1_results),
+    )
+
     # Create anonymized labels for responses (Response A, Response B, etc.)
     labels = [chr(65 + i) for i in range(len(stage1_results))]  # A, B, C, ...
 
@@ -123,6 +164,7 @@ Now provide your evaluation and ranking:"""
         COUNCIL_MODELS,
         messages,
         fallback_models=FALLBACK_MODELS,
+        trace_id=trace_id,
     )
 
     # Format results
@@ -149,13 +191,29 @@ Now provide your evaluation and ranking:"""
             "attempted_models": response.get("attempted_models", [requested_model]),
         })
 
+    elapsed_ms = int((perf_counter() - started) * 1000)
+    logger.info(
+        "Stage 2 complete trace_id=%s success=%d failed=%d elapsed_ms=%d",
+        trace_value,
+        len(stage2_results),
+        len(failed_models),
+        elapsed_ms,
+    )
+    if failed_models:
+        logger.warning(
+            "Stage 2 failures trace_id=%s failed_models=%s",
+            trace_value,
+            [failure["model"] for failure in failed_models],
+        )
+
     return stage2_results, label_to_model, failed_models
 
 
 async def stage3_synthesize_final(
     user_query: str,
     stage1_results: List[Dict[str, Any]],
-    stage2_results: List[Dict[str, Any]]
+    stage2_results: List[Dict[str, Any]],
+    trace_id: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
     """
     Stage 3: Chairman synthesizes final response.
@@ -168,6 +226,15 @@ async def stage3_synthesize_final(
     Returns:
         Tuple of (result payload, optional failure details)
     """
+    trace_value = trace_id or "-"
+    started = perf_counter()
+    logger.info(
+        "Stage 3 start trace_id=%s stage1_responses=%d stage2_rankings=%d",
+        trace_value,
+        len(stage1_results),
+        len(stage2_results),
+    )
+
     # Build comprehensive context for chairman
     stage1_text = "\n\n".join([
         f"Model: {result['model']}\nResponse: {result['response']}"
@@ -203,6 +270,7 @@ Provide a clear, well-reasoned final answer that represents the council's collec
         CHAIRMAN_MODEL,
         messages,
         fallback_models=FALLBACK_MODELS,
+        trace_id=trace_id,
     )
 
     if not response.get("ok"):
@@ -213,6 +281,14 @@ Provide a clear, well-reasoned final answer that represents the council's collec
             "error": response.get("error", "Unknown error"),
             "attempted_models": response.get("attempted_models", [CHAIRMAN_MODEL]),
         }
+        elapsed_ms = int((perf_counter() - started) * 1000)
+        logger.warning(
+            "Stage 3 failed trace_id=%s status_code=%s attempted_models=%s elapsed_ms=%d",
+            trace_value,
+            failure.get("status_code"),
+            failure.get("attempted_models", []),
+            elapsed_ms,
+        )
         return {
             "model": CHAIRMAN_MODEL,
             "requested_model": CHAIRMAN_MODEL,
@@ -221,6 +297,14 @@ Provide a clear, well-reasoned final answer that represents the council's collec
         }, failure
 
     resolved_model = response.get("model", CHAIRMAN_MODEL)
+    elapsed_ms = int((perf_counter() - started) * 1000)
+    logger.info(
+        "Stage 3 complete trace_id=%s requested_model=%s actual_model=%s elapsed_ms=%d",
+        trace_value,
+        CHAIRMAN_MODEL,
+        resolved_model,
+        elapsed_ms,
+    )
     return {
         "model": CHAIRMAN_MODEL,
         "requested_model": CHAIRMAN_MODEL,
@@ -315,7 +399,10 @@ def calculate_aggregate_rankings(
     return aggregate
 
 
-async def generate_conversation_title(user_query: str) -> str:
+async def generate_conversation_title(
+    user_query: str,
+    trace_id: Optional[str] = None,
+) -> str:
     """
     Generate a short title for a conversation based on the first user message.
 
@@ -325,6 +412,14 @@ async def generate_conversation_title(user_query: str) -> str:
     Returns:
         A short title (3-5 words)
     """
+    trace_value = trace_id or "-"
+    started = perf_counter()
+    logger.info(
+        "Title generation start trace_id=%s query_chars=%d",
+        trace_value,
+        len(user_query),
+    )
+
     title_prompt = f"""Generate a very short title (3-5 words maximum) that summarizes the following question.
 The title should be concise and descriptive. Do not use quotes or punctuation in the title.
 
@@ -341,10 +436,19 @@ Title:"""
         timeout=TITLE_REQUEST_TIMEOUT_SECONDS,
         max_retries=1,
         fallback_models=FALLBACK_MODELS,
+        trace_id=trace_id,
     )
 
     if not response.get("ok"):
         # Fallback to a generic title
+        elapsed_ms = int((perf_counter() - started) * 1000)
+        logger.warning(
+            "Title generation failed trace_id=%s status_code=%s error=%s elapsed_ms=%d",
+            trace_value,
+            response.get("status_code"),
+            response.get("error"),
+            elapsed_ms,
+        )
         return "New Conversation"
 
     title = response.get("content", "New Conversation").strip()
@@ -356,10 +460,21 @@ Title:"""
     if len(title) > 50:
         title = title[:47] + "..."
 
+    elapsed_ms = int((perf_counter() - started) * 1000)
+    logger.info(
+        "Title generation complete trace_id=%s title=%s elapsed_ms=%d",
+        trace_value,
+        title,
+        elapsed_ms,
+    )
+
     return title
 
 
-async def run_full_council(user_query: str) -> Tuple[List, List, Dict, Dict]:
+async def run_full_council(
+    user_query: str,
+    trace_id: Optional[str] = None,
+) -> Tuple[List, List, Dict, Dict]:
     """
     Run the complete 3-stage council process.
 
@@ -369,8 +484,19 @@ async def run_full_council(user_query: str) -> Tuple[List, List, Dict, Dict]:
     Returns:
         Tuple of (stage1_results, stage2_results, stage3_result, metadata)
     """
+    trace_value = trace_id or "-"
+    started = perf_counter()
+    logger.info(
+        "Council run start trace_id=%s query_chars=%d",
+        trace_value,
+        len(user_query),
+    )
+
     # Stage 1: Collect individual responses
-    stage1_results, stage1_failures = await stage1_collect_responses(user_query)
+    stage1_results, stage1_failures = await stage1_collect_responses(
+        user_query,
+        trace_id=trace_id,
+    )
 
     failures: Dict[str, List[Dict[str, Any]]] = {
         "stage1": stage1_failures,
@@ -380,6 +506,12 @@ async def run_full_council(user_query: str) -> Tuple[List, List, Dict, Dict]:
 
     # If no models responded successfully, return error
     if not stage1_results:
+        elapsed_ms = int((perf_counter() - started) * 1000)
+        logger.warning(
+            "Council run ended with no stage1 responses trace_id=%s elapsed_ms=%d",
+            trace_value,
+            elapsed_ms,
+        )
         return [], [], {
             "model": "error",
             "response": "All models failed to respond. Please try again."
@@ -397,6 +529,7 @@ async def run_full_council(user_query: str) -> Tuple[List, List, Dict, Dict]:
     stage2_results, label_to_model, stage2_failures = await stage2_collect_rankings(
         user_query,
         stage1_results,
+        trace_id=trace_id,
     )
     failures["stage2"] = stage2_failures
 
@@ -407,7 +540,8 @@ async def run_full_council(user_query: str) -> Tuple[List, List, Dict, Dict]:
     stage3_result, stage3_failure = await stage3_synthesize_final(
         user_query,
         stage1_results,
-        stage2_results
+        stage2_results,
+        trace_id=trace_id,
     )
     if stage3_failure is not None:
         failures["stage3"] = [stage3_failure]
@@ -453,5 +587,17 @@ async def run_full_council(user_query: str) -> Tuple[List, List, Dict, Dict]:
             "stage3": stage3_fallbacks,
         },
     }
+
+    elapsed_ms = int((perf_counter() - started) * 1000)
+    logger.info(
+        "Council run complete trace_id=%s stage1_success=%d stage1_failures=%d stage2_success=%d stage2_failures=%d stage3_failures=%d elapsed_ms=%d",
+        trace_value,
+        len(stage1_results),
+        len(stage1_failures),
+        len(stage2_results),
+        len(stage2_failures),
+        len(failures["stage3"]),
+        elapsed_ms,
+    )
 
     return stage1_results, stage2_results, stage3_result, metadata
