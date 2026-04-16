@@ -18,8 +18,21 @@ const MIME_TYPES = {
   '.jpeg': 'image/jpeg',
   '.webp': 'image/webp',
   '.ico': 'image/x-icon',
+  '.map': 'application/json; charset=utf-8',
   '.txt': 'text/plain; charset=utf-8',
 };
+
+function cacheHeaderFor(filePath) {
+  if (filePath.endsWith('.html')) {
+    return 'no-cache';
+  }
+
+  if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+    return 'public, max-age=31536000, immutable';
+  }
+
+  return 'public, max-age=300';
+}
 
 function sendFile(res, filePath) {
   const ext = path.extname(filePath).toLowerCase();
@@ -29,7 +42,7 @@ function sendFile(res, filePath) {
   stream.on('open', () => {
     res.writeHead(200, {
       'Content-Type': contentType,
-      'Cache-Control': 'public, max-age=300',
+      'Cache-Control': cacheHeaderFor(filePath),
     });
     stream.pipe(res);
   });
@@ -42,8 +55,15 @@ function sendFile(res, filePath) {
   });
 }
 
-function resolveStaticPath(requestUrl) {
-  const pathname = decodeURIComponent(requestUrl.split('?')[0]);
+function safePathname(requestUrl) {
+  try {
+    return decodeURIComponent(requestUrl.split('?')[0]);
+  } catch {
+    return null;
+  }
+}
+
+function resolveStaticPath(pathname) {
   const relativePath = pathname === '/' ? '/index.html' : pathname;
   const absolutePath = path.join(DIST_DIR, relativePath);
 
@@ -98,7 +118,14 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  const requestedFile = resolveStaticPath(req.url);
+  const pathname = safePathname(req.url);
+  if (!pathname) {
+    res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Bad Request');
+    return;
+  }
+
+  const requestedFile = resolveStaticPath(pathname);
   if (!requestedFile) {
     res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('Forbidden');
@@ -108,6 +135,13 @@ const server = http.createServer((req, res) => {
   fs.stat(requestedFile, (err, stat) => {
     if (!err && stat.isFile()) {
       sendFile(res, requestedFile);
+      return;
+    }
+
+    // If a specific asset file is missing, return 404 instead of HTML fallback.
+    if (path.extname(pathname)) {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Not Found');
       return;
     }
 
