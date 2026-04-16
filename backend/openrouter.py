@@ -6,7 +6,7 @@ import httpx
 from time import perf_counter
 from typing import List, Dict, Any, Optional
 from .config import (
-    OPENROUTER_API_KEY,
+    OPENROUTER_API_KEYS,
     OPENROUTER_API_URL,
     MAX_MODEL_RETRIES,
     MODEL_RETRY_BASE_DELAY_SECONDS,
@@ -25,10 +25,11 @@ async def _query_model_once(
     model: str,
     messages: List[Dict[str, str]],
     timeout: float,
+    api_key: str,
 ) -> Dict[str, Any]:
     """Execute a single OpenRouter request without retries."""
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
 
@@ -80,9 +81,9 @@ async def query_model(
     """
     trace_value = trace_id or "-"
 
-    if not OPENROUTER_API_KEY:
+    if not OPENROUTER_API_KEYS:
         logger.error(
-            "Model query skipped due to missing API key trace_id=%s requested_model=%s",
+            "Model query skipped due to missing API keys trace_id=%s requested_model=%s",
             trace_value,
             model,
         )
@@ -93,10 +94,16 @@ async def query_model(
             "content": None,
             "reasoning_details": None,
             "status_code": None,
-            "error": "OPENROUTER_API_KEY is not set",
+                "error": "No OpenRouter API key is set (OPENROUTER_API_KEY / OPENROUTER_API_KEYS / KEY1,KEY2,...)",
             "attempted_models": [model],
             "fallback_used": False,
+            "rate_limited": False,
+            "rate_limit_events": [],
+                "attempted_key_slots": [],
+                "api_key_slot": None,
         }
+
+            api_keys = OPENROUTER_API_KEYS
 
     candidate_models = [model]
     if fallback_models:
@@ -106,15 +113,18 @@ async def query_model(
         )
 
     logger.info(
-        "Model query start trace_id=%s requested_model=%s candidate_count=%d timeout_s=%.1f max_retries=%d",
+        "Model query start trace_id=%s requested_model=%s candidate_count=%d api_key_count=%d timeout_s=%.1f max_retries=%d",
         trace_value,
         model,
         len(candidate_models),
+        len(api_keys),
         timeout,
         max_retries,
     )
 
     attempted_models: List[str] = []
+    attempted_key_slots: List[int] = []
+    rate_limit_events: List[Dict[str, Any]] = []
     last_error = "Unknown error"
     last_status_code: Optional[int] = None
     stop_after_current_candidate = False
@@ -139,102 +149,154 @@ async def query_model(
                 candidate_model,
             )
 
-        for attempt in range(max_retries + 1):
-            attempt_number = attempt + 1
-            logger.debug(
-                "Model query attempt trace_id=%s requested_model=%s candidate_model=%s attempt=%d",
-                trace_value,
-                model,
-                candidate_model,
-                attempt_number,
-            )
-            try:
-                payload = await _query_model_once(candidate_model, messages, timeout)
-                elapsed_ms = int((perf_counter() - request_started) * 1000)
-                logger.info(
-                    "Model query success trace_id=%s requested_model=%s used_model=%s attempt=%d fallback_used=%s elapsed_ms=%d",
+        for api_key_index, api_key in enumerate(api_keys):
+            api_key_slot = api_key_index + 1
+            if api_key_slot not in attempted_key_slots:
+                attempted_key_slots.append(api_key_slot)
+
+            if api_key_index > 0:
+                logger.warning(
+                    "Model query API key rotation trace_id=%s requested_model=%s candidate_model=%s api_key_slot=%d",
                     trace_value,
                     model,
                     candidate_model,
-                    attempt_number,
-                    candidate_model != model,
-                    elapsed_ms,
+                    api_key_slot,
                 )
-                return {
-                    "ok": True,
-                    "requested_model": model,
-                    "model": candidate_model,
-                    "content": payload.get("content", ""),
-                    "reasoning_details": payload.get("reasoning_details"),
-                    "status_code": 200,
-                    "error": None,
-                    "attempted_models": attempted_models.copy(),
-                    "fallback_used": candidate_model != model,
-                }
 
-            except httpx.HTTPStatusError as exc:
-                status_code = exc.response.status_code if exc.response is not None else None
-                last_status_code = status_code
-                last_error = str(exc)
-                retryable = status_code in RETRYABLE_STATUS_CODES
-
-                if retryable and attempt < max_retries:
-                    delay = retry_base_delay * (2 ** attempt)
-                    logger.warning(
-                        "Model query HTTP retry trace_id=%s requested_model=%s candidate_model=%s status_code=%s attempt=%d delay_s=%.1f",
+            switch_to_next_key = False
+            for attempt in range(max_retries + 1):
+                attempt_number = attempt + 1
+                logger.debug(
+                    "Model query attempt trace_id=%s requested_model=%s candidate_model=%s api_key_slot=%d attempt=%d",
+                    trace_value,
+                    model,
+                    candidate_model,
+                    api_key_slot,
+                    attempt_number,
+                )
+                try:
+                    payload = await _query_model_once(candidate_model, messages, timeout, api_key)
+                    elapsed_ms = int((perf_counter() - request_started) * 1000)
+                    logger.info(
+                        "Model query success trace_id=%s requested_model=%s used_model=%s api_key_slot=%d attempt=%d fallback_used=%s elapsed_ms=%d",
                         trace_value,
                         model,
                         candidate_model,
+                        api_key_slot,
+                        attempt_number,
+                        candidate_model != model,
+                        elapsed_ms,
+                    )
+                    return {
+                        "ok": True,
+                        "requested_model": model,
+                        "model": candidate_model,
+                        "content": payload.get("content", ""),
+                        "reasoning_details": payload.get("reasoning_details"),
+                        "status_code": 200,
+                        "error": None,
+                        "attempted_models": attempted_models.copy(),
+                        "fallback_used": candidate_model != model,
+                        "rate_limited": len(rate_limit_events) > 0,
+                        "rate_limit_events": rate_limit_events.copy(),
+                        "attempted_key_slots": attempted_key_slots.copy(),
+                        "api_key_slot": api_key_slot,
+                    }
+
+                except httpx.HTTPStatusError as exc:
+                    status_code = exc.response.status_code if exc.response is not None else None
+                    last_status_code = status_code
+                    last_error = str(exc)
+                    retryable = status_code in RETRYABLE_STATUS_CODES
+
+                    if status_code == 429:
+                        rate_limit_events.append({
+                            "candidate_model": candidate_model,
+                            "attempt": attempt_number,
+                            "status_code": status_code,
+                            "api_key_slot": api_key_slot,
+                        })
+
+                        if api_key_index < len(api_keys) - 1:
+                            logger.warning(
+                                "Model query key rate limited trace_id=%s requested_model=%s candidate_model=%s api_key_slot=%d next_api_key_slot=%d",
+                                trace_value,
+                                model,
+                                candidate_model,
+                                api_key_slot,
+                                api_key_slot + 1,
+                            )
+                            switch_to_next_key = True
+                            break
+
+                    if retryable and attempt < max_retries:
+                        delay = retry_base_delay * (2 ** attempt)
+                        logger.warning(
+                            "Model query HTTP retry trace_id=%s requested_model=%s candidate_model=%s api_key_slot=%d status_code=%s attempt=%d delay_s=%.1f",
+                            trace_value,
+                            model,
+                            candidate_model,
+                            api_key_slot,
+                            status_code,
+                            attempt_number,
+                            delay,
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+
+                    logger.warning(
+                        "Model query HTTP failure trace_id=%s requested_model=%s candidate_model=%s api_key_slot=%d status_code=%s attempt=%d error=%s",
+                        trace_value,
+                        model,
+                        candidate_model,
+                        api_key_slot,
                         status_code,
                         attempt_number,
-                        delay,
+                        last_error,
                     )
-                    await asyncio.sleep(delay)
-                    continue
+                    break
 
-                logger.warning(
-                    "Model query HTTP failure trace_id=%s requested_model=%s candidate_model=%s status_code=%s attempt=%d error=%s",
-                    trace_value,
-                    model,
-                    candidate_model,
-                    status_code,
-                    attempt_number,
-                    last_error,
-                )
-                break
+                except Exception as exc:  # Network and timeout failures
+                    last_error = str(exc)
+                    last_status_code = None
+                    if attempt < max_retries:
+                        delay = retry_base_delay * (2 ** attempt)
+                        logger.warning(
+                            "Model query network retry trace_id=%s requested_model=%s candidate_model=%s api_key_slot=%d attempt=%d delay_s=%.1f error=%s",
+                            trace_value,
+                            model,
+                            candidate_model,
+                            api_key_slot,
+                            attempt_number,
+                            delay,
+                            last_error,
+                        )
+                        await asyncio.sleep(delay)
+                        continue
 
-            except Exception as exc:  # Network and timeout failures
-                last_error = str(exc)
-                last_status_code = None
-                if attempt < max_retries:
-                    delay = retry_base_delay * (2 ** attempt)
+                    # If we exhausted retries on a timeout, don't chain into extra
+                    # fallback models that are likely to time out the same way.
+                    if isinstance(exc, httpx.TimeoutException):
+                        stop_after_current_candidate = True
+
                     logger.warning(
-                        "Model query network retry trace_id=%s requested_model=%s candidate_model=%s attempt=%d delay_s=%.1f error=%s",
+                        "Model query network failure trace_id=%s requested_model=%s candidate_model=%s api_key_slot=%d attempt=%d timeout=%s error=%s",
                         trace_value,
                         model,
                         candidate_model,
+                        api_key_slot,
                         attempt_number,
-                        delay,
+                        isinstance(exc, httpx.TimeoutException),
                         last_error,
                     )
-                    await asyncio.sleep(delay)
-                    continue
+                    break
 
-                # If we exhausted retries on a timeout, don't chain into extra
-                # fallback models that are likely to time out the same way.
-                if isinstance(exc, httpx.TimeoutException):
-                    stop_after_current_candidate = True
+            if switch_to_next_key:
+                continue
 
-                logger.warning(
-                    "Model query network failure trace_id=%s requested_model=%s candidate_model=%s attempt=%d timeout=%s error=%s",
-                    trace_value,
-                    model,
-                    candidate_model,
-                    attempt_number,
-                    isinstance(exc, httpx.TimeoutException),
-                    last_error,
-                )
-                break
+            # For non-429 failures we preserve previous behavior and move to
+            # fallback model candidates (if any) instead of cycling keys.
+            break
 
     elapsed_ms = int((perf_counter() - request_started) * 1000)
     logger.error(
@@ -256,6 +318,10 @@ async def query_model(
         "error": last_error,
         "attempted_models": attempted_models,
         "fallback_used": False,
+        "rate_limited": len(rate_limit_events) > 0,
+        "rate_limit_events": rate_limit_events,
+        "attempted_key_slots": attempted_key_slots,
+        "api_key_slot": None,
     }
 
 

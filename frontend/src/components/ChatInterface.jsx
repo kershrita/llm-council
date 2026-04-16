@@ -33,16 +33,41 @@ function formatFailureReason(failure) {
 }
 
 function ModelAvailability({ metadata }) {
+  const rateLimitItems = flattenStageItems(metadata?.rate_limits);
   const failureItems = flattenStageItems(metadata?.failures);
   const fallbackItems = flattenStageItems(metadata?.fallbacks);
 
-  if (failureItems.length === 0 && fallbackItems.length === 0) {
+  if (rateLimitItems.length === 0 && failureItems.length === 0 && fallbackItems.length === 0) {
     return null;
   }
 
   return (
     <div className="model-availability-panel">
       <h4>Model Availability</h4>
+
+      {rateLimitItems.length > 0 && (
+        <div className="model-availability-section model-availability-rate-limit">
+          <strong>Rate limit exceeded (HTTP 429)</strong>
+          <ul>
+            {rateLimitItems.map((item, index) => {
+              const requestedModel = item.requested_model || 'unknown model';
+              const usedModel = item.used_model;
+              const eventCount = item.event_count || 1;
+              return (
+                <li key={`rate-limit-${index}`}>
+                  <span className="availability-stage">
+                    {STAGE_LABELS[item.stageKey] || item.stageKey}:
+                  </span>{' '}
+                  <span className="availability-model">{requestedModel}</span>{' '}
+                  <span className="availability-reason">
+                    (rate limit exceeded {eventCount}x{usedModel && usedModel !== requestedModel ? `, rerouted to ${usedModel}` : ''})
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
 
       {failureItems.length > 0 && (
         <div className="model-availability-section">

@@ -12,7 +12,7 @@ import asyncio
 from time import perf_counter
 
 from . import storage
-from .council import run_full_council, generate_conversation_title, stage1_collect_responses, stage2_collect_rankings, stage3_synthesize_final, calculate_aggregate_rankings
+from .council import run_full_council, generate_conversation_title, stage1_collect_responses, stage2_collect_rankings, stage3_synthesize_final, calculate_aggregate_rankings, collect_rate_limit_events
 from .config import COUNCIL_MODELS, LOG_LEVEL
 
 
@@ -231,6 +231,11 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                 "stage2": [],
                 "stage3": [],
             },
+            "rate_limits": {
+                "stage1": [],
+                "stage2": [],
+                "stage3": [],
+            },
         }
         stage1_results: List[Dict[str, Any]] = []
         stage2_results: List[Dict[str, Any]] = []
@@ -266,6 +271,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
                 trace_id=trace_id,
             )
             metadata["failures"]["stage1"] = stage1_failures
+            metadata["rate_limits"]["stage1"] = collect_rate_limit_events(stage1_results, stage1_failures)
             metadata["fallbacks"]["stage1"] = [
                 {
                     "requested_model": result.get("requested_model") or result.get("model"),
@@ -319,6 +325,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
             metadata["label_to_model"] = label_to_model
             metadata["aggregate_rankings"] = calculate_aggregate_rankings(stage2_results, label_to_model)
             metadata["failures"]["stage2"] = stage2_failures
+            metadata["rate_limits"]["stage2"] = collect_rate_limit_events(stage2_results, stage2_failures)
             metadata["fallbacks"]["stage2"] = [
                 {
                     "requested_model": result.get("requested_model") or result.get("model"),
@@ -351,6 +358,7 @@ async def send_message_stream(conversation_id: str, request: SendMessageRequest)
             )
             if stage3_failure is not None:
                 metadata["failures"]["stage3"] = [stage3_failure]
+            metadata["rate_limits"]["stage3"] = collect_rate_limit_events([stage3_result], metadata["failures"]["stage3"])
             metadata["fallbacks"]["stage3"] = []
             requested_stage3_model = stage3_result.get("requested_model") or stage3_result.get("model")
             actual_stage3_model = stage3_result.get("actual_model") or stage3_result.get("model")

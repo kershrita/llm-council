@@ -54,6 +54,20 @@ Create a `.env` file in the project root:
 OPENROUTER_API_KEY=sk-or-v1-...
 ```
 
+If you want automatic key rotation when rate limits happen (HTTP 429), you can add multiple keys:
+
+```bash
+# Option A: comma-separated
+OPENROUTER_API_KEYS=sk-or-v1-key1,sk-or-v1-key2,sk-or-v1-key3
+
+# Option B: numbered variables
+KEY1=sk-or-v1-key1
+KEY2=sk-or-v1-key2
+KEY3=sk-or-v1-key3
+```
+
+The backend will try the next key automatically when a request gets rate-limited.
+
 Get your API key at [openrouter.ai](https://openrouter.ai/). Make sure to purchase the credits you need, or sign up for automatic top up.
 
 ### 4. Configure Models (Optional)

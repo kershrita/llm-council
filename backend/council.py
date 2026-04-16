@@ -59,6 +59,9 @@ async def stage1_collect_responses(
                 "requested_model": requested_model,
                 "actual_model": resolved_model,
                 "response": response.get("content", ""),
+                "attempted_models": response.get("attempted_models", [requested_model]),
+                "rate_limited": response.get("rate_limited", False),
+                "rate_limit_events": response.get("rate_limit_events", []),
             })
             continue
 
@@ -67,6 +70,8 @@ async def stage1_collect_responses(
             "status_code": response.get("status_code"),
             "error": response.get("error", "Unknown error"),
             "attempted_models": response.get("attempted_models", [requested_model]),
+            "rate_limited": response.get("rate_limited", False),
+            "rate_limit_events": response.get("rate_limit_events", []),
         })
 
     elapsed_ms = int((perf_counter() - started) * 1000)
@@ -181,6 +186,9 @@ Now provide your evaluation and ranking:"""
                 "actual_model": resolved_model,
                 "ranking": full_text,
                 "parsed_ranking": parsed,
+                "attempted_models": response.get("attempted_models", [requested_model]),
+                "rate_limited": response.get("rate_limited", False),
+                "rate_limit_events": response.get("rate_limit_events", []),
             })
             continue
 
@@ -189,6 +197,8 @@ Now provide your evaluation and ranking:"""
             "status_code": response.get("status_code"),
             "error": response.get("error", "Unknown error"),
             "attempted_models": response.get("attempted_models", [requested_model]),
+            "rate_limited": response.get("rate_limited", False),
+            "rate_limit_events": response.get("rate_limit_events", []),
         })
 
     elapsed_ms = int((perf_counter() - started) * 1000)
@@ -280,6 +290,8 @@ Provide a clear, well-reasoned final answer that represents the council's collec
             "status_code": response.get("status_code"),
             "error": response.get("error", "Unknown error"),
             "attempted_models": response.get("attempted_models", [CHAIRMAN_MODEL]),
+            "rate_limited": response.get("rate_limited", False),
+            "rate_limit_events": response.get("rate_limit_events", []),
         }
         elapsed_ms = int((perf_counter() - started) * 1000)
         logger.warning(
@@ -310,6 +322,9 @@ Provide a clear, well-reasoned final answer that represents the council's collec
         "requested_model": CHAIRMAN_MODEL,
         "actual_model": resolved_model,
         "response": response.get("content", ""),
+        "attempted_models": response.get("attempted_models", [CHAIRMAN_MODEL]),
+        "rate_limited": response.get("rate_limited", False),
+        "rate_limit_events": response.get("rate_limit_events", []),
     }, None
 
 
@@ -397,6 +412,36 @@ def calculate_aggregate_rankings(
     aggregate.sort(key=lambda x: x['average_rank'])
 
     return aggregate
+
+
+def collect_rate_limit_events(
+    stage_results: List[Dict[str, Any]],
+    stage_failures: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Summarize where HTTP 429 occurred for a stage."""
+    events: List[Dict[str, Any]] = []
+
+    for result in stage_results:
+        if not result.get("rate_limited"):
+            continue
+        rate_limit_events = result.get("rate_limit_events") or []
+        events.append({
+            "requested_model": result.get("requested_model") or result.get("model"),
+            "used_model": result.get("actual_model") or result.get("model"),
+            "event_count": len(rate_limit_events) if rate_limit_events else 1,
+        })
+
+    for failure in stage_failures:
+        if not failure.get("rate_limited"):
+            continue
+        rate_limit_events = failure.get("rate_limit_events") or []
+        events.append({
+            "requested_model": failure.get("model"),
+            "used_model": None,
+            "event_count": len(rate_limit_events) if rate_limit_events else 1,
+        })
+
+    return events
 
 
 async def generate_conversation_title(
@@ -523,6 +568,11 @@ async def run_full_council(
                 "stage2": [],
                 "stage3": [],
             },
+            "rate_limits": {
+                "stage1": [],
+                "stage2": [],
+                "stage3": [],
+            },
         }
 
     # Stage 2: Collect rankings
@@ -575,6 +625,10 @@ async def run_full_council(
             "used_model": actual_stage3_model,
         })
 
+    stage1_rate_limits = collect_rate_limit_events(stage1_results, stage1_failures)
+    stage2_rate_limits = collect_rate_limit_events(stage2_results, stage2_failures)
+    stage3_rate_limits = collect_rate_limit_events([stage3_result], failures["stage3"])
+
     # Prepare metadata
     metadata = {
         "requested_models": COUNCIL_MODELS,
@@ -585,6 +639,11 @@ async def run_full_council(
             "stage1": stage1_fallbacks,
             "stage2": stage2_fallbacks,
             "stage3": stage3_fallbacks,
+        },
+        "rate_limits": {
+            "stage1": stage1_rate_limits,
+            "stage2": stage2_rate_limits,
+            "stage3": stage3_rate_limits,
         },
     }
 

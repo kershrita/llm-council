@@ -103,6 +103,21 @@
   margin-top: 8px;
 }
 
+.model-availability-rate-limit {
+  border: 1px solid #f3b3b3;
+  background: #fff3f1;
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.model-availability-rate-limit strong {
+  color: #8a1f1f;
+}
+
+.model-availability-rate-limit li {
+  color: #7a1d1d;
+}
+
 .model-availability-section strong {
   display: block;
   margin-bottom: 4px;

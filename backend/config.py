@@ -1,6 +1,8 @@
 """Configuration for the LLM Council."""
 
 import os
+import re
+from typing import List
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -8,8 +10,54 @@ load_dotenv()
 # Logging level for backend modules (DEBUG, INFO, WARNING, ERROR)
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
-# OpenRouter API key
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+def _append_unique_key(keys: List[str], raw_value: str | None) -> None:
+    """Add a key if present and not already included."""
+    if not raw_value:
+        return
+
+    value = raw_value.strip()
+    if value and value not in keys:
+        keys.append(value)
+
+
+def _collect_openrouter_api_keys() -> List[str]:
+    """Collect OpenRouter API keys from supported environment variables."""
+    keys: List[str] = []
+
+    # Primary single-key variable.
+    _append_unique_key(keys, os.getenv("OPENROUTER_API_KEY"))
+
+    # Optional comma-separated list.
+    multi_value = os.getenv("OPENROUTER_API_KEYS")
+    if multi_value:
+        for chunk in multi_value.split(","):
+            _append_unique_key(keys, chunk)
+
+    numbered_key_values: List[tuple[int, str]] = []
+
+    # Support OPENROUTER_API_KEY1, OPENROUTER_API_KEY2, ...
+    # and KEY1, KEY2, ... for convenience.
+    for env_name, env_value in os.environ.items():
+        openrouter_match = re.fullmatch(r"OPENROUTER_API_KEY(\d+)", env_name, flags=re.IGNORECASE)
+        if openrouter_match:
+            numbered_key_values.append((int(openrouter_match.group(1)), env_value))
+            continue
+
+        generic_match = re.fullmatch(r"KEY(\d+)", env_name, flags=re.IGNORECASE)
+        if generic_match:
+            numbered_key_values.append((10_000 + int(generic_match.group(1)), env_value))
+
+    for _, value in sorted(numbered_key_values, key=lambda item: item[0]):
+        _append_unique_key(keys, value)
+
+    return keys
+
+
+# OpenRouter API keys (primary + optional fallbacks)
+OPENROUTER_API_KEYS = _collect_openrouter_api_keys()
+
+# Backward-compatible alias for older code paths.
+OPENROUTER_API_KEY = OPENROUTER_API_KEYS[0] if OPENROUTER_API_KEYS else None
 
 # Council members - list of OpenRouter model identifiers
 COUNCIL_MODELS = [
