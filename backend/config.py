@@ -93,4 +93,4 @@ MAX_FALLBACK_MODELS = int(os.getenv("MAX_FALLBACK_MODELS", "1"))
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 # Data directory for conversation storage
-DATA_DIR = "data/conversations"
+DATA_DIR = os.getenv("DATA_DIR", "data/conversations")

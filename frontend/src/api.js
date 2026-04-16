@@ -2,14 +2,42 @@
  * API client for the LLM Council backend.
  */
 
-const API_BASE = 'http://localhost:8001';
+function normalizeBaseUrl(url) {
+  return url.endsWith('/') ? url.slice(0, -1) : url;
+}
+
+function resolveApiBase() {
+  const configuredBase = import.meta.env.VITE_API_BASE_URL?.trim();
+  if (configuredBase) {
+    return normalizeBaseUrl(configuredBase);
+  }
+
+  if (typeof window !== 'undefined') {
+    const isLocalHost =
+      window.location.hostname === 'localhost' ||
+      window.location.hostname === '127.0.0.1';
+    const isViteDevPort = window.location.port === '5173';
+
+    if (isLocalHost && isViteDevPort) {
+      return 'http://localhost:8001';
+    }
+  }
+
+  return '';
+}
+
+const API_BASE = resolveApiBase();
+
+function apiUrl(path) {
+  return `${API_BASE}${path}`;
+}
 
 export const api = {
   /**
    * List all conversations.
    */
   async listConversations() {
-    const response = await fetch(`${API_BASE}/api/conversations`);
+    const response = await fetch(apiUrl('/api/conversations'));
     if (!response.ok) {
       throw new Error('Failed to list conversations');
     }
@@ -20,7 +48,7 @@ export const api = {
    * Create a new conversation.
    */
   async createConversation() {
-    const response = await fetch(`${API_BASE}/api/conversations`, {
+    const response = await fetch(apiUrl('/api/conversations'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -37,9 +65,7 @@ export const api = {
    * Get a specific conversation.
    */
   async getConversation(conversationId) {
-    const response = await fetch(
-      `${API_BASE}/api/conversations/${conversationId}`
-    );
+    const response = await fetch(apiUrl(`/api/conversations/${conversationId}`));
     if (!response.ok) {
       throw new Error('Failed to get conversation');
     }
@@ -51,7 +77,7 @@ export const api = {
    */
   async sendMessage(conversationId, content) {
     const response = await fetch(
-      `${API_BASE}/api/conversations/${conversationId}/message`,
+      apiUrl(`/api/conversations/${conversationId}/message`),
       {
         method: 'POST',
         headers: {
@@ -75,7 +101,7 @@ export const api = {
    */
   async sendMessageStream(conversationId, content, onEvent) {
     const response = await fetch(
-      `${API_BASE}/api/conversations/${conversationId}/message/stream`,
+      apiUrl(`/api/conversations/${conversationId}/message/stream`),
       {
         method: 'POST',
         headers: {

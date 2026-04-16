@@ -124,6 +124,141 @@ Then open http://localhost:5173 in your browser.
 - Frontend runs on http://localhost:5173
 - `start.sh` is a Bash script and is mainly for macOS/Linux environments.
 
+## Docker Deployment (Private GHCR Images)
+
+This repository now includes:
+
+- `backend/Dockerfile`
+- `frontend/Dockerfile`
+- `frontend/server.js` (Node static server + `/api` reverse proxy to backend)
+- `docker-compose.yml`
+- `.env`
+
+No host-level Nginx is required. The frontend container serves the app directly and is exposed on `http://<server-ip>:9999` by Docker Compose.
+
+The deployment flow is:
+
+1. Build images locally.
+2. Push images to private GHCR packages.
+3. Pull and run them on your server with Docker Compose.
+
+### 1. Prepare GitHub Container Registry Access
+
+Create a GitHub Personal Access Token (PAT):
+
+1. For your local machine (push): `write:packages`, `read:packages`.
+2. For your server (pull only): `read:packages`.
+
+Then login to GHCR:
+
+```bash
+docker login ghcr.io -u <github-username>
+```
+
+### 2. Build and Push Images (Local Machine)
+
+Owner and tag are fixed as requested:
+
+- Owner: `kershrita`
+- Tag: `v1`
+
+Build backend image:
+
+```bash
+docker build -f backend/Dockerfile -t ghcr.io/kershrita/llm-council-backend:v1 .
+```
+
+Build frontend image:
+
+```bash
+docker build -f frontend/Dockerfile -t ghcr.io/kershrita/llm-council-frontend:v1 frontend
+```
+
+Push backend image:
+
+```bash
+docker push ghcr.io/kershrita/llm-council-backend:v1
+```
+
+Push frontend image:
+
+```bash
+docker push ghcr.io/kershrita/llm-council-frontend:v1
+```
+
+### 3. Prepare Server Runtime Config
+
+In the server clone of this repo:
+
+1. Create one `.env` file (used by compose and backend runtime):
+
+```bash
+OPENROUTER_API_KEY=sk-or-v1-...
+LOG_LEVEL=INFO
+APP_PORT=9999
+```
+
+Never bake API keys into images.
+
+### 4. Pull and Run on Server
+
+Login to GHCR on the server:
+
+```bash
+docker login ghcr.io -u <github-username>
+```
+
+Pull images and start:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+Open:
+
+```text
+http://<server-ip>:9999
+```
+
+### 5. Verify and Operate
+
+Check service status:
+
+```bash
+docker compose ps
+```
+
+Tail logs:
+
+```bash
+docker compose logs -f backend
+docker compose logs -f frontend
+```
+
+Stop services:
+
+```bash
+docker compose down
+```
+
+Conversation history is stored in the named volume `council_data` mapped to `/app/data/conversations` in the backend container.
+
+### 6. Server Architecture Check (Optional but Recommended)
+
+Before publishing single-architecture images, check server architecture:
+
+```bash
+uname -m
+```
+
+Common values:
+
+- `x86_64` means `linux/amd64`
+- `aarch64` or `arm64` means `linux/arm64`
+
+If needed, use `docker buildx build --platform ...` to publish a matching image.
+
 ## Tech Stack
 
 - **Backend:** FastAPI (Python 3.10+), async httpx, OpenRouter API
