@@ -4,6 +4,8 @@ import ChatInterface from './components/ChatInterface';
 import { api } from './api';
 import './App.css';
 
+const CHAT_VIEW_MODE = 'status'; // 'status' | 'stages'
+
 function App() {
   const [conversations, setConversations] = useState([]);
   const [currentConversationId, setCurrentConversationId] = useState(null);
@@ -231,6 +233,7 @@ function App() {
         conversation={currentConversation}
         onSendMessage={handleSendMessage}
         isLoading={isLoading}
+        viewMode={CHAT_VIEW_MODE}
       />
     </div>
   );

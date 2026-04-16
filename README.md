@@ -101,7 +101,13 @@ Open two terminals from the repository root.
 Terminal 1 (Backend):
 
 ```powershell
-py -3.11 -m uv run python -m backend.main
+.\.venv\Scripts\python.exe -m backend.main
+```
+
+Alternative (if you prefer `uv run` and want to pin Python 3.11):
+
+```powershell
+py -3.11 -m uv run --python 3.11 python -m backend.main
 ```
 
 Terminal 2 (Frontend):

@@ -71,6 +71,218 @@
   font-size: 14px;
 }
 
+.status-mode-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 20px;
+  align-items: start;
+}
+
+.status-main-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.status-card {
+  background: #ffffff;
+  border: 1px solid #e4e7ee;
+  border-radius: 10px;
+  box-shadow: 0 8px 22px rgba(20, 45, 84, 0.06);
+}
+
+.status-question-card {
+  padding: 14px;
+  background: linear-gradient(180deg, #f8fbff 0%, #ffffff 100%);
+}
+
+.status-question-card .message-content {
+  background: #f0f7ff;
+  border: 1px solid #d0e7ff;
+  border-radius: 8px;
+}
+
+.status-chair-card {
+  padding: 16px;
+}
+
+.status-card-header {
+  margin-bottom: 10px;
+}
+
+.status-card-header h3 {
+  margin: 0;
+  font-size: 16px;
+  color: #223452;
+}
+
+.status-chairman-response {
+  background: #f0fff0;
+  border: 1px solid #c8e6c8;
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.status-waiting-state {
+  margin: 0;
+}
+
+.status-placeholder-text {
+  color: #6b7280;
+  font-size: 14px;
+  padding: 6px 0;
+}
+
+.status-progress-panel {
+  position: sticky;
+  top: 8px;
+  background: #fbfcff;
+  border: 1px solid #dce5f5;
+  border-radius: 10px;
+  padding: 14px;
+}
+
+.status-progress-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #e4e9f3;
+}
+
+.status-progress-header h3 {
+  margin: 0;
+  font-size: 15px;
+  color: #223452;
+}
+
+.status-progress-count {
+  font-size: 13px;
+  font-weight: 700;
+  color: #4a90e2;
+}
+
+.status-progress-count.is-failed {
+  color: #b23b3b;
+}
+
+.status-progress-track {
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  background: #e8eef8;
+  overflow: hidden;
+  margin: 0 0 12px 0;
+}
+
+.status-progress-fill {
+  height: 100%;
+  width: 0;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #4a90e2 0%, #6ab0ff 100%);
+  transition: width 0.35s ease;
+}
+
+.status-progress-fill-failed {
+  background: linear-gradient(90deg, #b64f4f 0%, #d97878 100%);
+}
+
+.status-step-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.status-step-item {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 8px 6px;
+  border-radius: 8px;
+}
+
+.status-step-marker {
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  border: 1px solid #b8c4da;
+  color: #50617f;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.status-step-text {
+  min-width: 0;
+}
+
+.status-step-title {
+  font-size: 13px;
+  color: #2b3b56;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.status-step-description {
+  font-size: 12px;
+  color: #6b7280;
+  margin-top: 2px;
+  line-height: 1.4;
+}
+
+.status-complete {
+  background: #eefaf0;
+}
+
+.status-complete .status-step-marker {
+  border-color: #4ea85c;
+  background: #dcf5e1;
+  color: #2e7a3a;
+}
+
+.status-active {
+  background: #eef5ff;
+}
+
+.status-active .status-step-marker {
+  border-color: #4a90e2;
+  background: #dceeff;
+  color: #2967b4;
+}
+
+.status-upcoming {
+  background: #f6f7fb;
+}
+
+.status-upcoming .status-step-marker {
+  border-color: #c9d2e3;
+  background: #ffffff;
+  color: #7a879d;
+}
+
+.status-failed {
+  background: #fff1f1;
+}
+
+.status-failed .status-step-marker {
+  border-color: #d06a6a;
+  background: #ffe3e3;
+  color: #a33737;
+}
+
+.status-failed .status-step-title {
+  color: #8d2f2f;
+}
+
 .stage-loading {
   display: flex;
   align-items: center;
@@ -224,4 +436,14 @@
   cursor: not-allowed;
   background: #ccc;
   border-color: #ccc;
+}
+
+@media (max-width: 1000px) {
+  .status-mode-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .status-progress-panel {
+    position: static;
+  }
 }

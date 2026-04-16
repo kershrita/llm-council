@@ -103,7 +103,7 @@ async def query_model(
                 "api_key_slot": None,
         }
 
-            api_keys = OPENROUTER_API_KEYS
+    api_keys = OPENROUTER_API_KEYS
 
     candidate_models = [model]
     if fallback_models:
@@ -133,7 +133,7 @@ async def query_model(
     for candidate_model in candidate_models:
         if stop_after_current_candidate:
             logger.warning(
-                "Model query halted after timeout exhaustion trace_id=%s requested_model=%s attempted_models=%s",
+                "Model query halted after terminal condition trace_id=%s requested_model=%s attempted_models=%s",
                 trace_value,
                 model,
                 attempted_models,
@@ -208,6 +208,7 @@ async def query_model(
                     last_status_code = status_code
                     last_error = str(exc)
                     retryable = status_code in RETRYABLE_STATUS_CODES
+                    is_auth_error = status_code in {401, 403}
 
                     if status_code == 429:
                         rate_limit_events.append({
@@ -228,6 +229,23 @@ async def query_model(
                             )
                             switch_to_next_key = True
                             break
+
+                    if is_auth_error:
+                        if api_key_index < len(api_keys) - 1:
+                            logger.warning(
+                                "Model query key unauthorized trace_id=%s requested_model=%s candidate_model=%s api_key_slot=%d status_code=%s next_api_key_slot=%d",
+                                trace_value,
+                                model,
+                                candidate_model,
+                                api_key_slot,
+                                status_code,
+                                api_key_slot + 1,
+                            )
+                            switch_to_next_key = True
+                            break
+
+                        # If all keys are unauthorized, don't burn additional fallback models.
+                        stop_after_current_candidate = True
 
                     if retryable and attempt < max_retries:
                         delay = retry_base_delay * (2 ** attempt)
